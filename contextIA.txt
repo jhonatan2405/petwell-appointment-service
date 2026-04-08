@@ -1,0 +1,379 @@
+================================================================================
+  PetWell — Appointment Service
+  contextIA.txt  |  v1.2.0  |  2026-04-07
+================================================================================
+
+─────────────────────────────────────────────────────────────────────────────
+1. DESCRIPCIÓN DEL SERVICIO
+─────────────────────────────────────────────────────────────────────────────
+
+Microservicio que gestiona la agenda veterinaria de PetWell.
+Puerto: 3005 | Base URL: /api/v1
+Framework: Express + TypeScript estricto
+Base de datos: Supabase (PostgreSQL)
+
+Responsabilidades:
+  • Configurar horarios de clínica por día de semana
+  • Configurar bloques de trabajo por veterinario
+  • Calcular disponibilidad (slots libres)
+  • Crear, editar y cancelar citas
+  • Gestionar lista de espera
+
+─────────────────────────────────────────────────────────────────────────────
+2. MODELO DE DATOS
+─────────────────────────────────────────────────────────────────────────────
+
+TABLE clinic_schedules
+  id            UUID PK default gen_random_uuid()
+  clinic_id     UUID NOT NULL
+  day_of_week   SMALLINT NOT NULL (0=Lun … 6=Dom)
+  open_time     TIME NOT NULL
+  close_time    TIME NOT NULL
+  is_active     BOOLEAN DEFAULT true
+  created_at    TIMESTAMPTZ DEFAULT now()
+  updated_at    TIMESTAMPTZ DEFAULT now()
+  UNIQUE (clinic_id, day_of_week)
+
+TABLE vet_blocks
+  id              UUID PK default gen_random_uuid()
+  clinic_id       UUID NOT NULL
+  veterinarian_id UUID NOT NULL
+  day_of_week     SMALLINT NOT NULL
+  start_time      TIME NOT NULL
+  end_time        TIME NOT NULL
+  slot_duration   SMALLINT NOT NULL DEFAULT 30  -- minutos
+  is_active       BOOLEAN DEFAULT true
+  created_at / updated_at TIMESTAMPTZ
+
+TABLE appointments
+  id                UUID PK
+  clinic_id         UUID NOT NULL
+  veterinarian_id   UUID NOT NULL
+  pet_id            UUID NOT NULL
+  owner_id          UUID NOT NULL
+  appointment_date  DATE NOT NULL
+  start_time        TIME NOT NULL
+  end_time          TIME NOT NULL
+  status            VARCHAR(20) DEFAULT 'PENDING'
+                    -- PENDING | CONFIRMED | CANCELLED | COMPLETED | NO_SHOW
+  type              VARCHAR(20) DEFAULT 'PRESENCIAL'
+                    -- PRESENCIAL | TELEMEDICINA
+  reason_type       VARCHAR(50) DEFAULT 'CONSULTA'
+                    -- CONSULTA | VACUNACION | URGENCIA
+  reason            TEXT
+  notes             TEXT
+  cancelled_by      UUID
+  cancelled_reason  TEXT
+  created_at / updated_at TIMESTAMPTZ
+  UNIQUE (veterinarian_id, appointment_date, start_time)  -- previene doble reserva
+
+TABLE waitlist
+  id                UUID PK
+  clinic_id         UUID NOT NULL
+  pet_id            UUID NOT NULL
+  owner_id          UUID NOT NULL
+  veterinarian_id   UUID
+  preferred_date    DATE
+  preferred_time    TIME
+  reason            TEXT
+  status            VARCHAR(20) DEFAULT 'WAITING'
+                    -- WAITING | NOTIFIED | RESOLVED | CANCELLED
+  created_at / updated_at TIMESTAMPTZ
+
+Triggers: updated_at automático en todas las tablas
+Índices:  appointments(clinic_id, appointment_date, status)
+          appointments(veterinarian_id, appointment_date)
+          appointments(owner_id)
+          appointments(pet_id)
+          waitlist(clinic_id, status)
+
+─────────────────────────────────────────────────────────────────────────────
+3. ARQUITECTURA
+─────────────────────────────────────────────────────────────────────────────
+
+appointment-service/
+├── src/
+│   ├── config/
+│   │   ├── env.ts                  ← variables de entorno tipadas
+│   │   └── supabase.ts             ← cliente Supabase (service role)
+│   ├── controllers/
+│   │   ├── appointment.controller.ts
+│   │   ├── schedule.controller.ts
+│   │   ├── vetblock.controller.ts
+│   │   └── waitlist.controller.ts
+│   ├── services/
+│   │   ├── appointment.service.ts  ← lógica de negocio principal
+│   │   ├── schedule.service.ts
+│   │   ├── vetblock.service.ts
+│   │   ├── availability.service.ts ← algoritmo de slots disponibles
+│   │   └── waitlist.service.ts
+│   ├── repositories/
+│   │   ├── appointment.repository.ts
+│   │   ├── schedule.repository.ts
+│   │   ├── vetblock.repository.ts
+│   │   └── waitlist.repository.ts
+│   ├── routes/
+│   │   ├── appointment.routes.ts
+│   │   ├── schedule.routes.ts
+│   │   ├── vetblock.routes.ts
+│   │   ├── waitlist.routes.ts
+│   │   └── index.ts
+│   ├── models/
+│   │   └── appointment.model.ts    ← toda la tipería TypeScript
+│   ├── middlewares/
+│   │   ├── auth.middleware.ts      ← JWT + authorize factory
+│   │   ├── validate.middleware.ts  ← validadores por endpoint
+│   │   └── error.middleware.ts
+│   ├── utils/
+│   │   ├── response.util.ts        ← successResponse / errorResponse
+│   │   ├── jwt.util.ts             ← verifyToken + JwtPayload
+│   │   └── slots.util.ts           ← generador de slots por bloque
+│   └── server.ts
+├── database/
+│   └── schema.sql
+├── .env.example
+├── package.json
+└── tsconfig.json
+
+─────────────────────────────────────────────────────────────────────────────
+4. ENDPOINTS COMPLETOS
+─────────────────────────────────────────────────────────────────────────────
+
+Base URL: /api/v1  |  Puerto: 3005
+
+── Health ──────────────────────────────────────────────────────────────────
+GET  /health
+  → { status: "ok", service: "appointment-service" }
+
+── Disponibilidad ──────────────────────────────────────────────────────────
+GET  /appointments/availability?clinic_id=&date=YYYY-MM-DD[&veterinarian_id=]
+  Acceso: todos los roles autenticados
+
+  Comportamiento:
+    • Sin veterinarian_id → retorna slots de TODOS los vets de la clínica
+      con bloques activos ese día (parallel computation por veterinario).
+    • Con veterinarian_id → retorna solo slots de ese veterinario.
+
+  Formato de cada slot retornado:
+    {
+      start_time:       string,   // "HH:MM"
+      end_time:         string,   // "HH:MM"
+      veterinarian_id:  string,
+      veterinarian_name?: string  // resuelto desde User Service (opcional)
+    }
+
+  Resultado ordenado por start_time.
+  Si User Service no responde, veterinarian_name se omite (graceful degradation).
+
+── Appointments ─────────────────────────────────────────────────────────────
+POST   /appointments                         201  DUENO_MASCOTA | CLINIC_ADMIN | RECEPCIONISTA
+GET    /appointments                         200  todos los roles
+GET    /appointments/:id                     200  todos los roles (con filtrado por ownership)
+PUT    /appointments/:id                     200  DUENO_MASCOTA* | CLINIC_ADMIN | RECEPCIONISTA
+PATCH  /appointments/:id/status              200  todos excepto PETWELL_ADMIN
+DELETE /appointments/:id                     200  CLINIC_ADMIN
+
+── Horarios de Clínica ──────────────────────────────────────────────────────
+GET    /schedules/:clinicId                  200  todos los roles autenticados
+POST   /schedules                            201  CLINIC_ADMIN
+PUT    /schedules/:id                        200  CLINIC_ADMIN
+DELETE /schedules/:id                        200  CLINIC_ADMIN
+
+── Bloques de Veterinario ───────────────────────────────────────────────────
+GET    /vetblocks/:clinicId                  200  CLINIC_ADMIN | RECEPCIONISTA | VETERINARIO
+GET    /vetblocks/:clinicId/:veterinarianId  200  CLINIC_ADMIN | RECEPCIONISTA | VETERINARIO
+POST   /vetblocks                            201  CLINIC_ADMIN
+PUT    /vetblocks/:id                        200  CLINIC_ADMIN
+DELETE /vetblocks/:id                        200  CLINIC_ADMIN
+
+── Lista de Espera ──────────────────────────────────────────────────────────
+POST   /waitlist                             201  DUENO_MASCOTA
+GET    /waitlist/:clinicId                   200  CLINIC_ADMIN | RECEPCIONISTA
+PATCH  /waitlist/:id/status                  200  CLINIC_ADMIN | RECEPCIONISTA
+DELETE /waitlist/:id                         200  DUENO_MASCOTA | CLINIC_ADMIN
+
+─────────────────────────────────────────────────────────────────────────────
+5. MODELO DE SEGURIDAD
+─────────────────────────────────────────────────────────────────────────────
+
+JWT payload: { sub, email, role, clinic_id?, iat, exp }
+
+Operación               | DUENO | CLINIC_ADMIN | RECEPCIONISTA | VETERINARIO
+------------------------|-------|--------------|---------------|------------
+Ver disponibilidad      |  ✅   |      ✅      |      ✅       |     ✅
+Crear cita propia       |  ✅   |      ❌      |      ❌       |     ❌
+Crear cita para cliente |  ❌   |      ✅      |      ✅       |     ❌
+Ver sus citas           |  ✅   |      ✅*     |      ✅*      |     ✅*
+Editar cita             |  ⚠️   |      ✅      |      ✅       |     ❌
+Cambiar estado          |  ⚠️   |      ✅      |      ✅       |     ⚠️
+Eliminar cita           |  ❌   |      ✅      |      ❌       |     ❌
+Gestionar horarios      |  ❌   |      ✅      |      ❌       |     ❌
+Gestionar vet-blocks    |  ❌   |      ✅      |      ❌       |     ❌
+Ver lista de espera     |  ❌   |      ✅      |      ✅       |     ❌
+Unirse lista de espera  |  ✅   |      ❌      |      ❌       |     ❌
+
+* solo citas de su clínica
+⚠️ DUENO: editar solo si PENDING; cancelar solo si PENDING/CONFIRMED
+⚠️ VETERINARIO: solo COMPLETED | NO_SHOW
+
+Reglas críticas:
+  1. owner_id SIEMPRE del JWT para DUENO_MASCOTA (nunca del body)
+  2. clinic_id SIEMPRE del JWT para roles de clínica
+  3. Doble reserva → HTTP 409
+  4. COMPLETED/CANCELLED → no pueden editarse
+
+─────────────────────────────────────────────────────────────────────────────
+6. COMUNICACIÓN CON OTROS SERVICIOS
+─────────────────────────────────────────────────────────────────────────────
+
+→ Pet Service (3002):
+  GET /api/v1/pets/:petId
+  Valida: mascota existe y owner_ids incluye al dueño
+  Si 404 → 404 | Si no responde → 502 (fail-secure)
+
+→ User Service (3003):
+  GET /api/v1/users/:userId
+  Uso 1 (creación de cita): valida veterinario existe y pertenece a la clínica.
+             Si 404 → 404 | Si no responde → 502 (fail-secure)
+  Uso 2 (disponibilidad): resuelve nombre del veterinario para enriquecer slots.
+             Si no responde → omite veterinarian_name (graceful degradation)
+
+Eventos publicados (console.log estructurado, sin broker):
+  appointment.created   → { appointmentId, clinicId, ownerId, petId, date, startTime, type }
+  appointment.cancelled → { appointmentId, clinicId, ownerId, cancelledBy, reason }
+  appointment.completed → { appointmentId, clinicId, petId, vetId }
+
+─────────────────────────────────────────────────────────────────────────────
+7. VARIABLES DE ENTORNO
+─────────────────────────────────────────────────────────────────────────────
+
+PORT=3005
+NODE_ENV=development
+JWT_SECRET=<secreto compartido>
+SUPABASE_URL=<url del proyecto supabase>
+SUPABASE_SERVICE_ROLE_KEY=<service role key>
+ALLOWED_ORIGINS=http://localhost:3000
+PET_SERVICE_URL=http://localhost:3002
+USER_SERVICE_URL=http://localhost:3003
+
+─────────────────────────────────────────────────────────────────────────────
+8. RESPUESTA ESTÁNDAR
+─────────────────────────────────────────────────────────────────────────────
+
+Éxito:  { "success": true,  "message": "...", "data": <payload> }
+Error:  { "success": false, "message": "...", "errors": [...] }
+
+Códigos HTTP:
+  200 OK | 201 Creado | 400 Parámetro inválido | 401 No autenticado
+  403 Sin permisos | 404 No encontrado | 409 Conflicto (doble reserva)
+  422 Error de validación | 500 Error interno | 502 Error con otro servicio
+
+─────────────────────────────────────────────────────────────────────────────
+9. CHANGELOG
+─────────────────────────────────────────────────────────────────────────────
+
+v1.3.0 — 2026-03-25
+- Prevención de doble reserva
+- Corrección de permisos
+- Enriquecimiento de citas
+
+v1.2.7 — 2026-03-26
+- Fix: lectura correcta de respuesta del User Service
+- Corrección definitiva de validación de veterinario
+
+v1.2.6 — 2026-03-25
+- Fix crítico: separación de validación por rol en Appointment Service
+- DUENO_MASCOTA ya no depende de clinic_id
+
+v1.2.5 — 2026-03-25
+- Corrección definitiva de permisos en creación de citas
+- DUENO_MASCOTA habilitado correctamente en service layer
+
+v1.2.4 — 2026-03-25
+- Se habilita DUENO_MASCOTA para crear citas
+- Corrección de validación de roles en Appointment Service
+
+v1.2.3 — 2026-03-25
+- Corrección crítica: uso de user.sub en lugar de user.id
+- Fix definitivo de ownership en Appointment Service
+
+v1.2.2 — 2026-03-25
+- Corrección de manejo de errores en Pet Service
+- Eliminación de falsos 403 en creación de citas
+
+v1.2.1 — 2026-03-25
+- Fix validación ownership de mascotas
+- Compatibilidad con múltiples estructuras del Pet Service
+
+v1.2.0 — 2026-03-25
+- Permisos actualizados en creación de citas
+- DUENO_MASCOTA ahora puede crear citas
+- Validación de ownership implementada
+
+v1.1.0 — 2025-03-25
+  • GET /appointments/availability: modo todos-los-vets cuando no se envía veterinarian_id
+  • Nuevo tipo EnrichedSlot: { start_time, end_time, veterinarian_id, veterinarian_name? }
+  • Resolución de nombre del veterinario desde User Service (graceful degradation)
+  • Nuevo findVetBlocksByClinicAndDay en vetblock.repository.ts
+  • Cálculo de slots en paralelo por veterinario (Promise.all)
+  • Resultado ordenado por start_time
+  • Retrocompatible: si se envía veterinarian_id funciona igual que antes
+
+v1.0.0 — 2025-03-25
+  • Implementación inicial completa
+  • CRUD de citas con validación de doble reserva
+  • Algoritmo de disponibilidad por bloques de veterinario
+  • Gestión de horarios de clínica y bloques de veterinario
+  • Lista de espera
+  • Verificación de mascota/veterinario con Pet Service y User Service
+  • Publicación de eventos: appointment.created, .cancelled, .completed
+  • TypeScript estricto — 0 errores de compilación
+  • Roles: DUENO_MASCOTA | CLINIC_ADMIN | VETERINARIO | RECEPCIONISTA | PETWELL_ADMIN
+
+─────────────────────────────────────────────────────────────────────────────
+10. SEGURIDAD — ROW LEVEL SECURITY (RLS)
+─────────────────────────────────────────────────────────────────────────────
+
+Script: database/rls_security.sql
+Ejecutar en Supabase SQL Editor DESPUÉS de schema.sql
+
+Estado RLS por tabla:
+
+  Tabla              | RLS  | Políticas
+  -------------------|------|----------
+  clinic_schedules   | ✅   | SELECT (staff+owner), INSERT/UPDATE/DELETE (CLINIC_ADMIN misma clínica)
+  vet_blocks         | ✅   | SELECT (staff+owner), INSERT/UPDATE/DELETE (CLINIC_ADMIN misma clínica)
+  appointments       | ✅   | SELECT (ADMIN=all, staff=misma clínica, owner=propias)
+                     |      | INSERT (ADMIN, RECEPCIONISTA misma clínica, DUENO_MASCOTA self)
+                     |      | UPDATE (ADMIN, staff misma clínica, owner propias)
+                     |      | DELETE (CLINIC_ADMIN únicamente)
+  waitlist           | ✅   | SELECT (staff misma clínica, owner propias)
+                     |      | INSERT (DUENO_MASCOTA únicamente)
+                     |      | UPDATE (staff misma clínica)
+                     |      | DELETE (DUENO_MASCOTA propias, CLINIC_ADMIN misma clínica)
+
+Helper function:
+  auth.jwt_claim(claim TEXT) → extrae claim del JWT con NULLIF seguro
+  Accede a: current_setting('request.jwt.claims', true)::json ->> claim
+
+Claims JWT usados en políticas:
+  sub       → UUID del usuario (para validación de owner_id)
+  role      → rol del usuario  (para decisiones de acceso)
+  clinic_id → UUID de la clínica (para aislamiento entre clínicas)
+
+Nota importante sobre Service Role:
+  El cliente Supabase en Node.js usa SUPABASE_SERVICE_ROLE_KEY,
+  que bypassa RLS por diseño. Las políticas protegen acceso
+  directo a la BD (PostgREST, anon clients, Supabase Studio).
+  La validación de negocio se mantiene en la capa de servicio.
+
+================================================================================
+
+v1.2.0 — 2026-04-07
+  • RLS activado en las 4 tablas del Appointment Service
+  • Script: database/rls_security.sql
+  • Políticas por tabla: clinic_schedules, vet_blocks, appointments, waitlist
+  • Helper: auth.jwt_claim() para acceso seguro a claims JWT
+  • Resuelve alertas Supabase: rls_disabled_in_public
+
+================================================================================
