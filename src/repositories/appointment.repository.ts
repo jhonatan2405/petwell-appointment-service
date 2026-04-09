@@ -123,7 +123,13 @@ export async function createAppointment(
     .select()
     .single();
 
-  if (error) throw new Error(error.message);
+  if (error) {
+    console.error('SUPABASE ERROR:', error);
+    // Avoid silent 500s: throw a specific error structure to handle in the controller
+    const err = new Error(error.message) as any;
+    err.supabaseError = error;
+    throw err;
+  }
   return data as AppointmentRow;
 }
 

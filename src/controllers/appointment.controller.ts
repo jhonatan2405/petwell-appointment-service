@@ -67,15 +67,55 @@ export async function getAppointmentById(req: Request, res: Response): Promise<v
 
 // ─── POST /appointments ──────────────────────────────────────────────────────
 export async function createAppointment(req: Request, res: Response): Promise<void> {
+  console.log('BODY:', req.body);
+
   try {
+    // 4. Validar campos requeridos antes de insertar
+    // 5. Asegurar que los nombres coincidan EXACTAMENTE con la BD
+    // DB requires: pet_id, clinic_id, veterinarian_id, appointment_date (date), start_time (time)
+    
+    // Map in case frontend sends 'date' or 'time' instead of 'appointment_date' or 'start_time'
+    const body = {
+      ...req.body,
+      appointment_date: req.body.appointment_date || req.body.date,
+      start_time: req.body.start_time || req.body.time,
+    } as CreateAppointmentBody;
+
+    const { pet_id, veterinarian_id, appointment_date, start_time } = body;
     const authHeader = req.headers.authorization ?? '';
     const token = authHeader.split(' ')[1] ?? '';
-    const appointment = await bookAppointment(req.user!, req.body as CreateAppointmentBody, token);
+    const role = req.user?.role;
+    
+    let clinic_id = body.clinic_id;
+    if (role === 'DUENO_MASCOTA') {
+      if (!clinic_id) {
+        res.status(400).json(errorResponse('clinic_id es requerido para DUENO_MASCOTA'));
+        return;
+      }
+    } else {
+      clinic_id = req.user?.clinic_id ?? '';
+    }
+
+    if (!pet_id || !clinic_id || !veterinarian_id || !appointment_date || !start_time) {
+      res.status(400).json(errorResponse('Campos requeridos faltantes. Se requiere: pet_id, clinic_id, veterinarian_id, appointment_date (o date), start_time (o time)'));
+      return;
+    }
+
+    const appointment = await bookAppointment(req.user!, body, token);
     res.status(201).json(successResponse('Cita creada exitosamente', appointment));
-  } catch (err) {
-    const e = err as NodeJS.ErrnoException;
-    const code = parseInt(e.code ?? '500', 10);
-    res.status(isNaN(code) ? 500 : code).json(errorResponse(e.message));
+  } catch (err: any) {
+    // 2. Capturar errores de Supabase sin usar throw sin manejar (avoiding generic 500)
+    if (err.supabaseError) {
+      console.error('SUPABASE ERROR:', err.supabaseError);
+      res.status(400).json({
+        error: err.supabaseError.message || err.message,
+        details: err.supabaseError
+      });
+      return;
+    }
+
+    const code = parseInt(err.code ?? '500', 10);
+    res.status(isNaN(code) ? 500 : code).json(errorResponse(err.message));
   }
 }
 
