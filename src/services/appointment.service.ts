@@ -28,6 +28,327 @@ function publishEvent(event: string, payload: Record<string, unknown>): void {
   console.log(JSON.stringify({ event, ...payload, timestamp: new Date().toISOString() }));
 }
 
+// ─── Telemed Service integration ────────────────────────────────────────────
+
+async function createTelemedSession(
+  appointment: AppointmentRow,
+  token: string,
+): Promise<void> {
+  try {
+    const scheduledAt = `${appointment.appointment_date}T${appointment.start_time}`;
+    await axios.post(
+      `${env.TELEMED_SERVICE_URL}/api/v1/telemed/sessions`,
+      {
+        appointment_id:   appointment.id,
+        clinic_id:        appointment.clinic_id,
+        veterinarian_id:  appointment.veterinarian_id,
+        owner_id:         appointment.owner_id,
+        pet_id:           appointment.pet_id,
+        scheduled_at:     scheduledAt,
+      },
+      {
+        headers: { Authorization: `Bearer ${token}` },
+        timeout: 8000,
+      },
+    );
+    console.log(`[Telemed] Session created for appointment ${appointment.id}`);
+  } catch (error) {
+    console.error('[Telemed] Telemed session creation failed', error);
+  }
+}
+
+// ─── Notification Service integration ──────────────────────────────────────
+
+/** Etiquetas legibles para los tipos de cita */
+const APPOINTMENT_TYPE_LABELS: Record<string, string> = {
+  PRESENCIAL:   '🏥 Consulta Presencial',
+  TELEMEDICINA: '💻 Teleconsulta (Videollamada)',
+  URGENCIA:     '🚨 Urgencia',
+};
+const REASON_TYPE_LABELS: Record<string, string> = {
+  CONSULTA:    'Consulta general',
+  VACUNACION:  'Vacunación',
+  URGENCIA:    'Urgencia / Emergencia',
+};
+
+async function createAppointmentConfirmation(
+  appointment: AppointmentRow,
+  token: string,
+  email?: string
+): Promise<void> {
+  try {
+    const appointmentDate = new Date(`${appointment.appointment_date}T${appointment.start_time}`);
+    const formattedDate = appointmentDate.toLocaleString('es-CO', {
+      timeZone: 'America/Bogota',
+      dateStyle: 'full',
+      timeStyle: 'short'
+    });
+
+    // Obtener datos enriquecidos (en paralelo, fallan silenciosamente)
+    const [pet, vet, clinic] = await Promise.all([
+      getPet(appointment.pet_id, token).catch(() => null),
+      getUser(appointment.veterinarian_id, token).catch(() => null),
+      getClinic(appointment.clinic_id, token).catch(() => null),
+    ]);
+
+    const typeLabel   = APPOINTMENT_TYPE_LABELS[appointment.type] ?? appointment.type;
+    const reasonLabel = REASON_TYPE_LABELS[appointment.reason_type] ?? appointment.reason_type;
+
+    const petName  = pet?.name   ?? 'tu mascota';
+    const vetName  = vet ? `Dr/a. ${vet.first_name ?? ''} ${vet.last_name ?? ''}`.trim() : null;
+    const clinicName = clinic?.name ?? null;
+
+    const messageParts: string[] = [
+      `Tu cita veterinaria ha sido confirmada exitosamente.`,
+      ``,
+      `📅 Fecha: ${formattedDate}`,
+      `🐾 Mascota: ${petName}`,
+      typeLabel   ? `🏷️  Tipo: ${typeLabel}`     : '',
+      reasonLabel ? `📋 Motivo: ${reasonLabel}`   : '',
+      appointment.reason ? `💬 Descripción: ${appointment.reason}` : '',
+      vetName     ? `👨‍⚕️ Veterinario: ${vetName}` : '',
+      clinicName  ? `🏢 Clínica: ${clinicName}`  : '',
+    ].filter(Boolean);
+
+    await axios.post(
+      `${env.NOTIFICATION_SERVICE_URL}/api/v1/notifications`,
+      {
+        user_id: appointment.owner_id,
+        email,
+        type: 'APPOINTMENT_REMINDER',
+        title: '✅ Cita confirmada en PetWell',
+        message: messageParts.join('\n'),
+        channel: 'EMAIL',
+        metadata: {
+          email,
+          appointmentDetails: {
+            date: formattedDate,
+            type: typeLabel,
+            reason: reasonLabel,
+            description: appointment.reason ?? null,
+            petName,
+            vetName,
+            clinicName,
+            appointmentId: appointment.id,
+          }
+        }
+      },
+      {
+        headers: { Authorization: `Bearer ${token}` },
+        timeout: 8000,
+      },
+    );
+    console.log(`[Notification] Rich confirmation sent for appointment ${appointment.id}`);
+  } catch (error) {
+    console.error('[Notification] Confirmation failed', error);
+  }
+}
+
+async function createVetNotification(
+  appointment: AppointmentRow,
+  token: string,
+  email?: string
+): Promise<void> {
+  try {
+    const appointmentDate = new Date(`${appointment.appointment_date}T${appointment.start_time}`);
+    const formattedDate = appointmentDate.toLocaleString('es-CO', {
+      timeZone: 'America/Bogota',
+      dateStyle: 'full',
+      timeStyle: 'short'
+    });
+
+    const [pet, owner] = await Promise.all([
+      getPet(appointment.pet_id, token).catch(() => null),
+      getUser(appointment.owner_id, token).catch(() => null),
+    ]);
+
+    const typeLabel   = APPOINTMENT_TYPE_LABELS[appointment.type] ?? appointment.type;
+    const reasonLabel = REASON_TYPE_LABELS[appointment.reason_type] ?? appointment.reason_type;
+    const petName   = pet?.name   ?? 'la mascota';
+    const ownerName = owner ? `${owner.first_name ?? ''} ${owner.last_name ?? ''}`.trim() : null;
+
+    const messageParts: string[] = [
+      `Tienes una nueva cita asignada en tu agenda.`,
+      ``,
+      `📅 Fecha: ${formattedDate}`,
+      `🐾 Paciente: ${petName}`,
+      ownerName   ? `👤 Propietario: ${ownerName}` : '',
+      typeLabel   ? `🏷️  Tipo: ${typeLabel}`         : '',
+      reasonLabel ? `📋 Motivo: ${reasonLabel}`       : '',
+      appointment.reason ? `💬 Descripción: ${appointment.reason}` : '',
+    ].filter(Boolean);
+
+    await axios.post(
+      `${env.NOTIFICATION_SERVICE_URL}/api/v1/notifications`,
+      {
+        user_id: appointment.veterinarian_id,
+        email,
+        type: 'APPOINTMENT_REMINDER',
+        title: '📋 Nueva cita asignada',
+        message: messageParts.join('\n'),
+        channel: 'EMAIL',
+        metadata: {
+          email,
+          appointmentDetails: {
+            date: formattedDate,
+            type: typeLabel,
+            reason: reasonLabel,
+            description: appointment.reason ?? null,
+            petName,
+            ownerName,
+            appointmentId: appointment.id,
+          }
+        }
+      },
+      {
+        headers: { Authorization: `Bearer ${token}` },
+        timeout: 8000,
+      },
+    );
+    console.log(`[Notification] Rich vet notification sent for appointment ${appointment.id}`);
+  } catch (error) {
+    console.error('[Notification] Vet notification failed', error);
+  }
+}
+
+
+
+async function createNotificationReminder(
+  appointment: AppointmentRow,
+  token: string,
+): Promise<void> {
+  try {
+    const appointmentDate = new Date(`${appointment.appointment_date}T${appointment.start_time}`);
+    
+    // El recordatorio sí lleva scheduled_at (-24h)
+    const scheduledReminder = new Date(appointmentDate);
+    scheduledReminder.setHours(scheduledReminder.getHours() - 24);
+
+    const formattedDate = appointmentDate.toLocaleString('es-CO', {
+      timeZone: 'America/Bogota',
+      dateStyle: 'full',
+      timeStyle: 'short'
+    });
+
+    await axios.post(
+      `${env.NOTIFICATION_SERVICE_URL}/api/v1/notifications`,
+      {
+        user_id: appointment.owner_id,
+        type: "APPOINTMENT_REMINDER",
+        title: "Recordatorio de cita",
+        message: `Tienes una cita programada el ${formattedDate}`,
+        channel: "EMAIL",
+        scheduled_at: scheduledReminder.toISOString(),
+        metadata: {
+          appointment_id: appointment.id,
+          clinic_id: appointment.clinic_id,
+          pet_id: appointment.pet_id
+        }
+      },
+      {
+        headers: { Authorization: `Bearer ${token}` },
+        timeout: 8000,
+      },
+    );
+    console.log(`[Notification] Reminder scheduled for appointment ${appointment.id}`);
+  } catch (error) {
+    console.error('[Notification] Reminder failed', error);
+  }
+}
+
+async function createTelemedCountdownReminder(
+  appointment: AppointmentRow,
+  token: string,
+): Promise<void> {
+  if (appointment.type !== 'TELEMEDICINA') return;
+
+  try {
+    const appointmentDate = new Date(`${appointment.appointment_date}T${appointment.start_time}`);
+    
+    // Alerta justa 5 minutos antes
+    const scheduledReminder = new Date(appointmentDate);
+    scheduledReminder.setMinutes(scheduledReminder.getMinutes() - 5);
+
+    const formattedDate = appointmentDate.toLocaleString('es-CO', {
+      timeZone: 'America/Bogota',
+      dateStyle: 'full',
+      timeStyle: 'short'
+    });
+
+    await axios.post(
+      `${env.NOTIFICATION_SERVICE_URL}/api/v1/notifications`,
+      {
+        user_id: appointment.owner_id,
+        type: "TELEMED",
+        title: "¡Tu consulta inicia pronto! ⏳",
+        message: `Tu consulta por videollamada inicia en menos de 5 minutos (el ${formattedDate}). Ingresa a PetWell para prepararte.`,
+        channel: "EMAIL",
+        scheduled_at: scheduledReminder.toISOString(),
+        metadata: {
+          appointment_id: appointment.id,
+          clinic_id: appointment.clinic_id,
+          pet_id: appointment.pet_id
+        }
+      },
+      {
+        headers: { Authorization: `Bearer ${token}` },
+        timeout: 8000,
+      },
+    );
+    console.log(`[Notification] 5min Countdown Reminder scheduled for appointment ${appointment.id}`);
+  } catch (error) {
+    console.error('[Notification] 5min Countdown Reminder failed', error);
+  }
+}
+
+// ─── Billing Service integration ─────────────────────────────────────
+
+/**
+ * Creates a DRAFT invoice in the billing-service after an appointment is booked.
+ * Fires asynchronously — a failure here must never cancel the appointment.
+ * Includes a robust retry mechanism to ensure consistency.
+ */
+async function createInvoiceForAppointment(
+  appointment: AppointmentRow,
+  amount: number,
+  description: string,
+  token: string,
+): Promise<void> {
+  const maxRetries = 3;
+  let attempt = 0;
+  
+  while (attempt < maxRetries) {
+    try {
+      await axios.post(
+        `${env.BILLING_SERVICE_URL}/api/v1/billing/invoices`,
+        {
+          clinic_id:      appointment.clinic_id,
+          owner_id:       appointment.owner_id,
+          appointment_id: appointment.id,
+          total_amount:   amount,
+          description,
+          status:         'DRAFT',
+        },
+        {
+          headers: { 'X-Internal-Service-Key': env.INTERNAL_SERVICE_KEY },
+          timeout: 8000,
+        },
+      );
+      console.log(`[Billing] Invoice created for appointment ${appointment.id} — COP ${amount}`);
+      return; // Success
+    } catch (error) {
+      attempt++;
+      console.error(`[Billing] Warning: Invoice creation failed on attempt ${attempt} for appointment ${appointment.id}`);
+      if (attempt === maxRetries) {
+        console.error(`[CRITICAL] Error definitivo al crear factura para la cita ${appointment.id}. Requiere revisión manual. Error:`, (error as Error).message);
+      } else {
+        // Wait before retrying (exponential backoff: 2s, 4s...)
+        await new Promise(res => setTimeout(res, attempt * 2000));
+      }
+    }
+  }
+}
+
 // ─── External service verification y obtención de datos ────────────────────
 
 async function getPet(petId: string, token: string, cache?: Map<string, any>): Promise<any> {
@@ -418,6 +739,7 @@ export async function bookAppointment(
     type: body.type ?? 'PRESENCIAL',
     reason_type: body.reason_type ?? 'CONSULTA',
     reason: body.reason,
+    status: 'PENDING_PAYMENT',   // Always starts as PENDING_PAYMENT for billing flow
   });
 
   publishEvent('appointment.created', {
@@ -429,6 +751,61 @@ export async function bookAppointment(
     startTime: appointment.start_time,
     type: appointment.type,
   });
+
+  // Fetch users to retrieve emails for immediate dispatch
+  const [ownerData, vetData] = await Promise.all([
+    getUser(appointment.owner_id, authToken).catch(() => null),
+    getUser(appointment.veterinarian_id, authToken).catch(() => null)
+  ]);
+
+  // Auto-create Telemed session when type is TELEMEDICINA
+  if (appointment.type === 'TELEMEDICINA') {
+    await createTelemedSession(appointment, authToken);
+  }
+
+  // ── Async background tasks (Fire-and-Forget) ────────────────────────────────
+
+  // Fetch pricing from billing-service to calculate invoice amount
+  let invoiceAmount = 0;
+  let invoiceDescription = 'Consulta veterinaria';
+  try {
+    const pricingRes = await axios.get(
+      `${env.BILLING_SERVICE_URL}/api/v1/billing/pricing/${appointment.clinic_id}`,
+      { headers: { Authorization: `Bearer ${authToken}` }, timeout: 5000 },
+    );
+    const pricing = pricingRes.data?.data;
+    const typeMap: Record<string, keyof typeof pricing> = {
+      CONSULTA:    'price_consulta',
+      URGENCIA:    'price_urgencia',
+      VACUNACION:  'price_vacunacion',
+    };
+    const isTelemed = appointment.type === 'TELEMEDICINA';
+    const reasonKey = typeMap[appointment.reason_type ?? 'CONSULTA'];
+
+    invoiceAmount = isTelemed
+      ? (pricing?.price_telemedicina ?? 0)
+      : (pricing?.[reasonKey] ?? 0);
+
+    invoiceDescription = isTelemed
+      ? 'Teleconsulta veterinaria'
+      : `Cita veterinaria — ${appointment.reason_type ?? 'CONSULTA'}`;
+  } catch (e) {
+    console.error('[Billing] Could not fetch pricing, invoice will be $0', e);
+  }
+
+  // Despacho de notificaciones en paralelo Fire-And-Forget
+  const notificationPromises = [
+    createNotificationReminder(appointment, authToken),
+    createAppointmentConfirmation(appointment, authToken, ownerData?.email),
+    createVetNotification(appointment, authToken, vetData?.email),
+    createInvoiceForAppointment(appointment, invoiceAmount, invoiceDescription, authToken),
+  ];
+
+  if (appointment.type === 'TELEMEDICINA') {
+    notificationPromises.push(createTelemedCountdownReminder(appointment, authToken));
+  }
+
+  Promise.all(notificationPromises).catch(err => console.error("Error dispatching background notifications", err));
 
   return appointment;
 }

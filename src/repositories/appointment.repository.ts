@@ -115,6 +115,7 @@ export async function createAppointment(
     type: string;
     reason_type?: string;
     reason?: string;
+    status?: string;   // optional — defaults to 'PENDING' in DB if not provided
   },
 ): Promise<AppointmentRow> {
   const { data, error } = await supabase

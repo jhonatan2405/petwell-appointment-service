@@ -72,7 +72,30 @@ async function computeSlotsForVet(
     generateSlots(block.start_time, block.end_time, block.slot_duration),
   );
 
-  const available = filterAvailableSlots(allSlots, takenSlots);
+  let available = filterAvailableSlots(allSlots, takenSlots);
+
+  // ─── Filter past times (America/Bogota timezone) ───
+  // sv-SE locale outputs "YYYY-MM-DD HH:mm:ss" natively
+  const [bogotaDate, bogotaTime] = new Date()
+    .toLocaleString('sv-SE', { timeZone: 'America/Bogota' })
+    .split(' ');
+  
+  if (!bogotaDate || !bogotaTime) {
+    // Fallback if Date format is unexpected
+    console.warn(`[getAvailableSlots] Unexpected date format from toLocaleString`);
+  } else {
+    const currentTime = bogotaTime.substring(0, 5); // "HH:mm"
+
+    if (date < bogotaDate) {
+      // Past dates entirely
+      return [];
+    } else if (date === bogotaDate) {
+      // Today: filter slots before current time
+      available = available.filter(slot => slot.start_time > currentTime);
+    }
+  }
+  // ───────────────────────────────────────────────────
+
   if (available.length === 0) return [];
 
   const veterinarian_name = await fetchVetName(veterinarianId, authToken);

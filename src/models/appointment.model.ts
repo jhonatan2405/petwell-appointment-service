@@ -2,6 +2,8 @@
 
 export type AppointmentStatus =
   | 'PENDING'
+  | 'PENDING_PAYMENT'
+  | 'PROCESSING_PAYMENT'
   | 'CONFIRMED'
   | 'CANCELLED'
   | 'COMPLETED'

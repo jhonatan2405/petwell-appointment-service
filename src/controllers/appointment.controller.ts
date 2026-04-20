@@ -8,6 +8,7 @@ import {
   changeAppointmentStatus,
   removeAppointment,
 } from '../services/appointment.service';
+import { patchAppointmentStatus } from '../repositories/appointment.repository';
 import { successResponse, errorResponse } from '../utils/response.util';
 import { AppointmentFilters } from '../repositories/appointment.repository';
 import { AppointmentStatus, CreateAppointmentBody, UpdateAppointmentBody } from '../models/appointment.model';
@@ -139,6 +140,55 @@ export async function patchStatus(req: Request, res: Response): Promise<void> {
     const { status, cancelled_reason } = req.body as { status: AppointmentStatus; cancelled_reason?: string };
     const appointment = await changeAppointmentStatus(req.params['id']!, req.user!, status, cancelled_reason);
     res.status(200).json(successResponse('Estado actualizado', appointment));
+  } catch (err) {
+    const e = err as NodeJS.ErrnoException;
+    const code = parseInt(e.code ?? '500', 10);
+    res.status(isNaN(code) ? 500 : code).json(errorResponse(e.message));
+  }
+}
+
+// ─── PATCH /appointments/:id/internal/complete ───────────────────────────────
+/**
+ * Ruta exclusiva para comunicación interna entre microservicios.
+ * Autenticada por X-Internal-Service-Key, NO por JWT de usuario.
+ * Solo marca una cita como COMPLETED — no acepta otros estados.
+ * Usada por telemed-service al finalizar una consulta.
+ */
+export async function patchStatusInternal(req: Request, res: Response): Promise<void> {
+  try {
+    const { id } = req.params;
+    if (!id) {
+      res.status(400).json(errorResponse('appointment id requerido'));
+      return;
+    }
+
+    const appointment = await patchAppointmentStatus(id, 'COMPLETED');
+    console.log(`[Internal] Appointment ${id} marcada COMPLETED por servicio interno`);
+    res.status(200).json(successResponse('Estado actualizado internamente', appointment));
+  } catch (err) {
+    const e = err as NodeJS.ErrnoException;
+    const code = parseInt(e.code ?? '500', 10);
+    res.status(isNaN(code) ? 500 : code).json(errorResponse(e.message));
+  }
+}
+
+// ─── PATCH /appointments/:id/confirm ─────────────────────────────────────────
+/**
+ * Ruta exclusiva para comunicación interna entre microservicios (billing-service).
+ * Autenticada por X-Internal-Service-Key.
+ * Marca la cita como CONFIRMED tras un pago exitoso.
+ */
+export async function confirmAppointment(req: Request, res: Response): Promise<void> {
+  try {
+    const { id } = req.params;
+    if (!id) {
+      res.status(400).json(errorResponse('appointment id requerido'));
+      return;
+    }
+
+    const appointment = await patchAppointmentStatus(id, 'CONFIRMED');
+    console.log(`[Internal] Appointment ${id} confirmada por pago exitoso (billing-service)`);
+    res.status(200).json(successResponse('Cita confirmada correctamente', appointment));
   } catch (err) {
     const e = err as NodeJS.ErrnoException;
     const code = parseInt(e.code ?? '500', 10);

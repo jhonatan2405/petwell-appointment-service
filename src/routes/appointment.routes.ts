@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { authenticate, authorize } from '../middlewares/auth.middleware';
+import { authenticateService } from '../middlewares/service.middleware';
 import { validate, validateCreateAppointment, validatePatchStatus } from '../middlewares/validate.middleware';
 import {
   getAvailability,
@@ -8,10 +9,26 @@ import {
   createAppointment,
   updateAppointment,
   patchStatus,
+  patchStatusInternal,
+  confirmAppointment,
   deleteAppointmentById,
 } from '../controllers/appointment.controller';
 
 const router = Router();
+
+// ─── INTERNAL: service-to-service (X-Internal-Service-Key) ───────────────────
+// Debe ir ANTES de las rutas con parámetros para evitar conflictos.
+router.patch(
+  '/:id/internal/complete',
+  authenticateService,
+  patchStatusInternal,
+);
+
+router.patch(
+  '/:id/confirm',
+  authenticateService,
+  confirmAppointment,
+);
 
 // Availability — all authenticated roles
 router.get('/availability', authenticate, getAvailability);
@@ -67,3 +84,4 @@ router.delete(
 );
 
 export default router;
+

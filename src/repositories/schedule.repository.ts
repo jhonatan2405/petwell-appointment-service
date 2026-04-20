@@ -4,15 +4,29 @@ import { ClinicScheduleRow, CreateScheduleBody, UpdateScheduleBody } from '../mo
 const TABLE = 'clinic_schedules';
 
 export async function findSchedulesByClinic(clinicId: string): Promise<ClinicScheduleRow[]> {
-  const { data, error } = await supabase
-    .from(TABLE)
-    .select('*')
-    .eq('clinic_id', clinicId)
-    .order('day_of_week');
+  const controller = new AbortController();
+  const timer = setTimeout(() => {
+    controller.abort();
+    console.error(`[findSchedulesByClinic] Query timeout (5s) para clinicId: ${clinicId}`);
+  }, 5000);
 
-  if (error) throw new Error(error.message);
-  return (data as ClinicScheduleRow[]) ?? [];
+  try {
+    const { data, error } = await supabase
+      .from(TABLE)
+      .select('*')
+      .eq('clinic_id', clinicId)
+      .order('day_of_week')
+      .abortSignal(controller.signal);
+
+    clearTimeout(timer);
+    if (error) throw new Error(error.message);
+    return (data as ClinicScheduleRow[]) ?? [];
+  } catch (err: any) {
+    clearTimeout(timer);
+    throw err;
+  }
 }
+
 
 export async function findScheduleById(id: string): Promise<ClinicScheduleRow | null> {
   const { data, error } = await supabase

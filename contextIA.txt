@@ -1,6 +1,6 @@
 ================================================================================
   PetWell — Appointment Service
-  contextIA.txt  |  v1.2.0  |  2026-04-07
+  contextIA.txt  |  v1.5.0  |  2026-04-13
 ================================================================================
 
 ─────────────────────────────────────────────────────────────────────────────
@@ -238,6 +238,14 @@ Reglas críticas:
   Uso 2 (disponibilidad): resuelve nombre del veterinario para enriquecer slots.
              Si no responde → omite veterinarian_name (graceful degradation)
 
+→ Telemed Service (3006):
+  POST /api/v1/telemed/sessions
+  Disparado automáticamente al crear una cita con type = "TELEMEDICINA".
+  Body: { appointment_id, clinic_id, veterinarian_id, owner_id, pet_id, scheduled_at }
+  Header: Authorization: Bearer <JWT original del usuario>
+  Comportamiento ante fallo: NO cancela la cita — solo registra el error (fire-and-forget).
+  Variable de entorno: TELEMED_SERVICE_URL (default: http://localhost:3006)
+
 Eventos publicados (console.log estructurado, sin broker):
   appointment.created   → { appointmentId, clinicId, ownerId, petId, date, startTime, type }
   appointment.cancelled → { appointmentId, clinicId, ownerId, cancelledBy, reason }
@@ -255,6 +263,7 @@ SUPABASE_SERVICE_ROLE_KEY=<service role key>
 ALLOWED_ORIGINS=http://localhost:3000
 PET_SERVICE_URL=http://localhost:3002
 USER_SERVICE_URL=http://localhost:3003
+TELEMED_SERVICE_URL=http://localhost:3006
 
 ─────────────────────────────────────────────────────────────────────────────
 8. RESPUESTA ESTÁNDAR
@@ -375,5 +384,102 @@ v1.2.0 — 2026-04-07
   • Políticas por tabla: clinic_schedules, vet_blocks, appointments, waitlist
   • Helper: auth.jwt_claim() para acceso seguro a claims JWT
   • Resuelve alertas Supabase: rls_disabled_in_public
+
+================================================================================
+
+─────────────────────────────────────────────────────────────────────────────
+11. INTEGRACIÓN CON TELEMED SERVICE
+─────────────────────────────────────────────────────────────────────────────
+
+Cuando se crea una cita con type = "TELEMEDICINA", el Appointment Service
+envía automáticamente una solicitud al Telemed Service para crear la sesión.
+
+Función: createTelemedSession(appointment, token)
+  Archivo: src/services/appointment.service.ts
+  Llamada desde: bookAppointment() — DESPUÉS de guardar la cita en BD
+
+Request al Telemed Service:
+  POST {TELEMED_SERVICE_URL}/api/v1/telemed/sessions
+  Headers:
+    Authorization: Bearer <JWT original del usuario>
+  Body:
+    {
+      appointment_id:  string,   // UUID de la cita recién creada
+      clinic_id:       string,
+      veterinarian_id: string,
+      owner_id:        string,
+      pet_id:          string,
+      scheduled_at:    string,   // ISO 8601: "YYYY-MM-DDTHH:MM"
+    }
+
+Manejo de errores:
+  • Éxito → log informativo: "[Telemed] Session created for appointment <id>"
+  • Fallo  → log de error: "[Telemed] Telemed session creation failed"
+  • La cita NO se cancela si Telemed falla (comportamiento fire-and-forget)
+  • Timeout: 8000 ms
+
+Seguridad:
+  El JWT original del usuario se reenvía al Telemed Service.
+  Telemed valida los permisos de forma independiente.
+
+Verificación:
+  POST /api/v1/appointments  { type: "TELEMEDICINA", ... }
+  GET  /api/v1/telemed/sessions/appointment/:appointmentId
+  → La sesión debe existir automáticamente.
+
+================================================================================
+
+v1.4.0 — 2026-04-13
+  • Integración con Telemed Service: auto-creación de sesiones de telemedicina
+  • Nueva función: createTelemedSession() en appointment.service.ts
+  • Nueva variable de entorno: TELEMED_SERVICE_URL (default: http://localhost:3006)
+  • Sección 11 agregada a contextIA.txt: Integración con Telemed Service
+  • Manejo de errores fire-and-forget: cita nunca se cancela si Telemed falla
+
+================================================================================
+
+─────────────────────────────────────────────────────────────────────────────
+12. INTEGRACIÓN CON NOTIFICATION SERVICE
+─────────────────────────────────────────────────────────────────────────────
+
+Cuando se crea una cita exitosamente, el Appointment Service envía
+automáticamente una solicitud al Notification Service para programar
+un recordatorio 24 horas antes de la cita.
+
+Función: createNotificationReminder(appointment, token)
+  Archivo: src/services/appointment.service.ts
+  Llamada desde: bookAppointment() — DESPUÉS de guardar la cita en BD
+
+Request al Notification Service:
+  POST {NOTIFICATION_SERVICE_URL}/api/v1/notifications
+  Headers:
+    Authorization: Bearer <JWT original del usuario>
+  Body:
+    {
+      user_id:        appointment.owner_id,
+      type:           "APPOINTMENT_REMINDER",
+      title:          "Recordatorio de cita",
+      message:        "Tienes una cita programada para mañana",
+      channel:        "EMAIL",
+      scheduled_at:   "<24 horas antes del inicio de la cita>",
+      metadata:       { appointment_id, clinic_id, pet_id }
+    }
+
+Manejo de errores:
+  • Éxito → log informativo: "[Notification] Reminder scheduled for appointment <id>"
+  • Fallo  → log de error: "[Notification] Notification failed"
+  • La cita NO se cancela si la notificación falla (arquitectura resiliente).
+  • Timeout: 8000 ms
+
+Seguridad:
+  El JWT original del usuario se reenvía al Notification Service.
+
+================================================================================
+
+v1.5.0 — 2026-04-13
+  • Integración con Notification Service para recordatorios automáticos de citas (-24h).
+  • Nueva función: createNotificationReminder() en appointment.service.ts.
+  • Nueva variable de entorno: NOTIFICATION_SERVICE_URL (default: http://localhost:3007).
+  • Sección 12 agregada a contextIA.txt.
 
 ================================================================================
