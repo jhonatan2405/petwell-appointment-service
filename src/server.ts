@@ -2,6 +2,7 @@ import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
 import morgan from 'morgan';
+import promBundle from 'express-prom-bundle';
 import { env } from './config/env';
 import router from './routes/index';
 import { errorHandler, notFoundHandler } from './middlewares/error.middleware';
@@ -19,6 +20,18 @@ app.use(morgan('dev'));
 // ─── Body parsing ────────────────────────────────────────────────────────────
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
+
+// ─── Prometheus Monitoring ───────────────────────────────────────────────────
+const metricsMiddleware = promBundle({
+    includeMethod: true,
+    includePath: true,
+    includeStatusCode: true,
+    includeUp: true,
+    promClient: {
+        collectDefaultMetrics: {}
+    }
+});
+app.use(metricsMiddleware);
 
 // ─── Health ──────────────────────────────────────────────────────────────────
 app.get('/health', (_req, res) => {
