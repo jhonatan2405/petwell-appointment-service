@@ -77,7 +77,7 @@ async function createAppointmentConfirmation(
   email?: string
 ): Promise<void> {
   try {
-    const appointmentDate = new Date(`${appointment.appointment_date}T${appointment.start_time}`);
+    const appointmentDate = new Date(`${appointment.appointment_date}T${appointment.start_time}-05:00`);
     const formattedDate = appointmentDate.toLocaleString('es-CO', {
       timeZone: 'America/Bogota',
       dateStyle: 'full',
@@ -151,7 +151,7 @@ async function createVetNotification(
   email?: string
 ): Promise<void> {
   try {
-    const appointmentDate = new Date(`${appointment.appointment_date}T${appointment.start_time}`);
+    const appointmentDate = new Date(`${appointment.appointment_date}T${appointment.start_time}-05:00`);
     const formattedDate = appointmentDate.toLocaleString('es-CO', {
       timeZone: 'America/Bogota',
       dateStyle: 'full',
@@ -219,7 +219,7 @@ async function createNotificationReminder(
   token: string,
 ): Promise<void> {
   try {
-    const appointmentDate = new Date(`${appointment.appointment_date}T${appointment.start_time}`);
+    const appointmentDate = new Date(`${appointment.appointment_date}T${appointment.start_time}-05:00`);
     
     // El recordatorio sí lleva scheduled_at (-24h)
     const scheduledReminder = new Date(appointmentDate);
@@ -264,7 +264,7 @@ async function createTelemedCountdownReminder(
   if (appointment.type !== 'TELEMEDICINA') return;
 
   try {
-    const appointmentDate = new Date(`${appointment.appointment_date}T${appointment.start_time}`);
+    const appointmentDate = new Date(`${appointment.appointment_date}T${appointment.start_time}-05:00`);
     
     // Alerta justa 5 minutos antes
     const scheduledReminder = new Date(appointmentDate);
