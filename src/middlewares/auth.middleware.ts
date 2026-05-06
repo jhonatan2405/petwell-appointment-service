@@ -13,6 +13,15 @@ declare global {
 }
 
 export function authenticate(req: Request, res: Response, next: NextFunction): void {
+  // ── Internal service key bypass (microservice-to-microservice calls) ──────────
+  const internalKey = req.headers['x-internal-service-key'];
+  const expectedKey = process.env['INTERNAL_SERVICE_KEY'] ?? 'petwell_internal_secret';
+  if (internalKey && internalKey === expectedKey) {
+    req.user = { sub: 'internal', id: 'internal', email: 'internal@petwell.co', role: 'CLINIC_ADMIN', clinic_id: undefined };
+    next();
+    return;
+  }
+
   const authHeader = req.headers.authorization;
   if (!authHeader?.startsWith('Bearer ')) {
     res.status(401).json(errorResponse('No autenticado: token no proporcionado'));
@@ -33,6 +42,7 @@ export function authenticate(req: Request, res: Response, next: NextFunction): v
     res.status(401).json(errorResponse('No autenticado: token inválido o expirado'));
   }
 }
+
 
 /**
  * Authorize middleware factory — checks that the request user has one of the allowed roles.
