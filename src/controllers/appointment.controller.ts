@@ -188,6 +188,39 @@ export async function confirmAppointment(req: Request, res: Response): Promise<v
 
     const appointment = await patchAppointmentStatus(id, 'CONFIRMED');
     console.log(`[Internal] Appointment ${id} confirmada por pago exitoso (billing-service)`);
+
+    // ── Si es Telemedicina, crear sesión de telemed si no existe ──────────────────
+    if (appointment.type === 'TELEMEDICINA') {
+      const telemedUrl = process.env['TELEMED_SERVICE_URL'] ?? 'http://localhost:3006';
+      const internalKey = process.env['INTERNAL_SERVICE_KEY'] ?? 'petwell_internal_secret';
+      const scheduledAt = `${appointment.appointment_date}T${appointment.start_time}-05:00`;
+
+      // Fire-and-forget: create the session without blocking the response
+      fetch(`${telemedUrl}/api/v1/telemed/sessions`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-internal-service-key': internalKey,
+        },
+        body: JSON.stringify({
+          appointment_id:  appointment.id,
+          clinic_id:       appointment.clinic_id,
+          veterinarian_id: appointment.veterinarian_id,
+          owner_id:        appointment.owner_id,
+          pet_id:          appointment.pet_id,
+          scheduled_at:    scheduledAt,
+        }),
+      })
+        .then(r => {
+          if (r.ok) {
+            console.log(`[Internal] ✅ Sesión telemed creada para cita ${id}`);
+          } else {
+            return r.text().then(t => console.warn(`[Internal] ⚠️  Telemed sesión ya existía o fallo: ${r.status} — ${t}`));
+          }
+        })
+        .catch(e => console.error('[Internal] Error creando sesión telemed:', e));
+    }
+
     res.status(200).json(successResponse('Cita confirmada correctamente', appointment));
   } catch (err) {
     const e = err as NodeJS.ErrnoException;
