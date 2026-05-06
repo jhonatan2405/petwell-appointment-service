@@ -84,7 +84,6 @@ async function createAppointmentConfirmation(
       timeStyle: 'short'
     });
 
-    // Obtener datos enriquecidos (en paralelo, fallan silenciosamente)
     const [pet, vet, clinic] = await Promise.all([
       getPet(appointment.pet_id, token).catch(() => null),
       getUser(appointment.veterinarian_id, token).catch(() => null),
@@ -94,12 +93,14 @@ async function createAppointmentConfirmation(
     const typeLabel   = APPOINTMENT_TYPE_LABELS[appointment.type] ?? appointment.type;
     const reasonLabel = REASON_TYPE_LABELS[appointment.reason_type] ?? appointment.reason_type;
 
-    const petName  = pet?.name   ?? 'tu mascota';
-    const vetName  = vet ? `Dr/a. ${vet.first_name ?? ''} ${vet.last_name ?? ''}`.trim() : null;
+    const petName    = pet?.name   ?? 'tu mascota';
+    const vetName    = vet ? `Dr/a. ${vet.first_name ?? ''} ${vet.last_name ?? ''}`.trim() : null;
     const clinicName = clinic?.name ?? null;
 
     const messageParts: string[] = [
-      `Tu cita veterinaria ha sido confirmada exitosamente.`,
+      `Tu cita veterinaria ha sido agendada exitosamente.`,
+      ``,
+      `❌ Para confirmar tu cita debes completar el pago a través de la plataforma PetWell.`,
       ``,
       `📅 Fecha: ${formattedDate}`,
       `🐾 Mascota: ${petName}`,
@@ -116,7 +117,7 @@ async function createAppointmentConfirmation(
         user_id: appointment.owner_id,
         email,
         type: 'APPOINTMENT_REMINDER',
-        title: '✅ Cita confirmada en PetWell',
+        title: '📅 Cita agendada — Completa tu pago',
         message: messageParts.join('\n'),
         channel: 'EMAIL',
         metadata: {
@@ -138,9 +139,9 @@ async function createAppointmentConfirmation(
         timeout: 8000,
       },
     );
-    console.log(`[Notification] Rich confirmation sent for appointment ${appointment.id}`);
+    console.log(`[Notification] Booking notification sent for appointment ${appointment.id}`);
   } catch (error) {
-    console.error('[Notification] Confirmation failed', error);
+    console.error('[Notification] Booking notification failed', error);
   }
 }
 
